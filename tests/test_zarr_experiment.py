@@ -23,6 +23,7 @@ from samet import apply_area
 from samet import files_to_zarr
 from samet import normalize_dataset
 from samet import write_zarr
+from samet.cache import ExperimentNamespace
 
 
 if TYPE_CHECKING:
@@ -196,8 +197,24 @@ def test_experiment_downloads_and_writes_an_openable_store(
     events: list[object] = []
     paths = experiment.download(listener=events.append)
     assert len(paths) == 3
+    assert experiment.cache_path == tmp_path / ".cache" / "fragments" / "samet" / "v2"
+    assert experiment.store_path == (
+        tmp_path
+        / ".cache"
+        / "stores"
+        / "samet"
+        / "probe"
+        / f"{experiment.fingerprint}.zarr"
+    )
     store = experiment.to_zarr(listener=events.append)
     assert store == experiment.store_path
+    manifest_path = tmp_path / ".cache" / "stores" / "samet" / "probe" / "manifest.json"
+    assert manifest_path.is_file()
+    manifest = ExperimentNamespace(tmp_path, "samet", "probe").load_manifest()
+    assert manifest is not None
+    record = manifest.stores[experiment.fingerprint]
+    assert record.provenance == {"0": "samet"}
+    assert record.coverage["variables"] == ["tmax", "tmean", "tmin"]
     with experiment.open() as dataset:
         assert {"tmax", "tmin", "tmean"} <= set(dataset.data_vars)
         assert "lat" in dataset.coords
@@ -280,6 +297,8 @@ def test_experiment_cache_key_is_isolated_per_request(tmp_path: Path) -> None:
         root_dir=tmp_path,
     )
     assert base.cache_key != other.cache_key
+    assert base.fingerprint == base.cache_key
+    assert base.cache_path == other.cache_path
     assert base.store_path != other.store_path
 
 

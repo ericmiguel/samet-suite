@@ -4,10 +4,10 @@ Run from the repository root:
 
     uv run scripts/demo.py
 
-The script downloads a handful of small files (a few MB in total) into
-``.cache/samet/`` and writes Zarr v3 stores under ``data/samet/``. Every step
-prints what it does and why, so the file doubles as extended documentation
-for the package.
+The script downloads a handful of small files (a few MB in total) into the
+shared fragment pool ``.cache/fragments/samet/v2/`` and writes Zarr v3 stores
+under ``.cache/stores/samet/<name>/``. Every step prints what it does and why,
+so the file doubles as extended documentation for the package.
 """
 
 from __future__ import annotations
@@ -122,8 +122,8 @@ def main() -> None:
 
     # ------------------------------------------------------------------
     heading("5. Cache identity: change any field, get a new isolated store")
-    # The cache key hashes the experiment name plus every request field.
-    # Same name, different day -> different store; no cross-contamination.
+    # The fingerprint hashes every request field but not the experiment
+    # name. Same name, different day -> different store; no cross-contamination.
     other = Experiment(name="demo_daily", day=DailyRequest(day=day - timedelta(days=1)))
     print(f"Original key: {daily.cache_key[:16]}...")
     print(f"Other key:    {other.cache_key[:16]}...  (different day)")

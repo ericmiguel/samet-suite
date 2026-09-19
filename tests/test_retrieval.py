@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from typing import override
 
@@ -29,12 +30,13 @@ from samet import SametDownloader
 from samet import plan_chunks
 
 
-def daily_chunk(tmp_path: Path) -> Chunk:
+def daily_chunk(tmp_path: Path, *, now: datetime | None = None) -> Chunk:
     """Plan the first (tmax) chunk of a probe daily request."""
     return plan_chunks(
         DailyRequest(day=probe_day()),
         tmp_path,
         request_name="probe",
+        now=now,
     ).chunks[0]
 
 
@@ -123,7 +125,7 @@ def test_download_is_idempotent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A verified file is reused; fresh cycles re-check the remote size."""
-    chunk = daily_chunk(tmp_path)
+    chunk = daily_chunk(tmp_path, now=datetime(2026, 9, 16, 12))
     fetcher = FakeFetcher()
     monkeypatch.setattr(
         "samet.retrieval.open_samet_dataset",

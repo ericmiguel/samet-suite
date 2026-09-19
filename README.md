@@ -92,9 +92,12 @@ without failing.
   `nobs_<variable>` station count each.
 - Hourly store: coordinates `time` (hour end, the source convention), `lat`,
   `lon`; variables `temperature` (degC) and `nobs`.
-- Store: `data/samet/<cache_key>.zarr`; cache: `.cache/samet/<cache_key>/`.
-  Changing any request field (day, hours, area) yields a new, isolated cache
-  key.
+- Fragments: source-global pool `.cache/fragments/samet/v2/`, shared by every
+  experiment that plans the same cycle.
+- Store: `.cache/stores/samet/<name>/<fingerprint>.zarr` with a
+  `manifest.json` beside it. The `name` is a validated slug and the
+  `fingerprint` hashes the request fields (never the name), so changing any
+  request field (day, hours, area) yields a new store over the same fragments.
 
 ## Guided demo
 

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 import xarray as xr
 
-from samet.cache import experiment_cache_dir
-from samet.cache import experiment_cache_key
-from samet.cache import experiment_store_path
+from samet.cache import default_namespace
+from samet.cache import legend_payload
+from samet.cache import normalize_dataclass
+from samet.cache import request_fingerprint
+from samet.cache import summarize_coverage
 from samet.chunking import plan_chunks
 from samet.events import FileResolved
 from samet.events import ItemWritten
@@ -26,6 +30,7 @@ from samet.zarr import files_to_zarr
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
     from samet.models import SametRequest
@@ -46,8 +51,8 @@ class Experiment:
     downloader : SametDownloader or None, default=None
         Optional downloader, normally injected with a fake in tests.
     root_dir : pathlib.Path or None, default=None
-        Project root used for the hidden cache and data directories. When
-        omitted, it is discovered from ``.git``, ``.venv``, or ``README.md``.
+        Project root used for the hidden cache tree. When omitted, it is
+        discovered from ``.git``, ``.venv``, or ``README.md``.
     requests : DailyRequest or HourlyRequest
         One or more named requests supplied as keyword arguments.
     """
@@ -71,8 +76,9 @@ class Experiment:
             )
         self.name = name
         self.requests = dict(requests)
-        self._cache_key = experiment_cache_key(name, self.requests)
         self.root_dir = resolve_project_root(root_dir)
+        self._namespace = default_namespace(self.root_dir, name)
+        self._fingerprint = request_fingerprint(self.requests)
         self.downloader = downloader or SametDownloader()
         self._paths: tuple[Path, ...] = ()
         self._request_paths: dict[str, tuple[Path, ...]] = {}
@@ -81,18 +87,23 @@ class Experiment:
 
     @property
     def cache_key(self) -> str:
-        """Return the isolated cache key for this experiment."""
-        return self._cache_key
+        """Return the request fingerprint (legacy name kept for callers)."""
+        return self._fingerprint
+
+    @property
+    def fingerprint(self) -> str:
+        """Return the request fingerprint that identifies the store."""
+        return self._fingerprint
 
     @property
     def cache_path(self) -> Path:
-        """Return the isolated cache directory for this experiment."""
-        return experiment_cache_dir(self.root_dir / ".cache", self.cache_key)
+        """Return the source-global fragment pool directory."""
+        return self._namespace.pool_dir
 
     @property
     def store_path(self) -> Path:
-        """Return the canonical Zarr v3 path for this experiment."""
-        return experiment_store_path(self.root_dir / "data", self.cache_key)
+        """Return the store path for this request fingerprint."""
+        return self._namespace.store_path(self._fingerprint)
 
     def plan(self, request_name: str) -> tuple[str, int, int]:
         """Return ``(files, messages, days)`` for one named request."""
@@ -192,6 +203,13 @@ class Experiment:
         self._store_path = destination
         if listener is not None:
             listener(ItemWritten(description=str(destination)))
+        self._namespace.record_store(
+            self._fingerprint,
+            requests=_requests_identity(self.requests),
+            coverage=summarize_coverage(self.requests),
+            provenance=legend_payload(),
+            now=_utc_now(),
+        )
         self._logger.info("Wrote Zarr store %s.", destination)
         return destination
 
@@ -200,3 +218,19 @@ class Experiment:
         if self._store_path is None:
             raise RuntimeError("Call to_zarr() before open().")
         return xr.open_zarr(self._store_path, consolidated=False)
+
+
+def _requests_identity(requests: Mapping[str, object]) -> dict[str, object]:
+    """Return a JSON-safe description of the named requests."""
+    return {
+        name: {
+            "type": type(request).__qualname__,
+            "fields": normalize_dataclass(request),
+        }
+        for name, request in sorted(requests.items())
+    }
+
+
+def _utc_now() -> str:
+    """Return the current UTC time as an ISO-8601 string."""
+    return datetime.now(UTC).isoformat()
