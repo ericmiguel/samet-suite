@@ -218,3 +218,55 @@ def test_download_reports_an_unusable_status(tmp_path: Path) -> None:
     chunk = daily_chunk(tmp_path)
     with pytest.raises(DownloadError, match="HTTP 500"):
         SametDownloader(fetcher=FakeFetcher(status=500)).download_chunk(chunk)
+
+
+def test_immutable_cache_hit_trusts_the_verified_stamp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An immutable file verified once is never decoded again."""
+    chunk = daily_chunk(tmp_path)
+    assert not chunk.mutable
+    fetcher = FakeFetcher()
+    monkeypatch.setattr(
+        "samet.retrieval.open_samet_dataset",
+        stub_decoder(sample_samet_dataset(variable="tmax")),
+    )
+    downloader = SametDownloader(fetcher=fetcher)
+    downloader.download_chunk(chunk)
+    ranges = len(fetcher.ranges)
+
+    def forbidden(_path: Path, _variables: tuple[str, ...]) -> None:
+        raise AssertionError("an immutable verified file must not decode")
+
+    monkeypatch.setattr(SametDownloader, "_verify", forbidden)
+    downloader.download_chunk(chunk)
+    assert len(fetcher.ranges) == ranges
+
+
+def test_a_modified_immutable_file_is_reverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fragment that no longer matches its stamp is decoded again."""
+    chunk = daily_chunk(tmp_path)
+    fetcher = FakeFetcher()
+    monkeypatch.setattr(
+        "samet.retrieval.open_samet_dataset",
+        stub_decoder(sample_samet_dataset(variable="tmax")),
+    )
+    downloader = SametDownloader(fetcher=fetcher)
+    downloader.download_chunk(chunk)
+    chunk.path.write_bytes(chunk.path.read_bytes()[:100])
+    real_verify = SametDownloader._verify
+    calls: list[Path] = []
+
+    def spy(_self: object, path: Path, variables: tuple[str, ...]) -> None:
+        calls.append(path)
+        real_verify(path, variables)
+
+    monkeypatch.setattr(SametDownloader, "_verify", spy)
+    downloader.download_chunk(chunk)
+    # The stamp no longer matched, so the modified fragment decoded once.
+    assert len(calls) == 1
+    downloader.download_chunk(chunk)
+    # The fresh stamp matches again, so the fragment is trusted.
+    assert len(calls) == 1

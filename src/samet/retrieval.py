@@ -139,6 +139,40 @@ def _raise_retryable_status(response: httpx.Response) -> None:
         raise TransientHTTPError(f"Transient HTTP status {response.status_code}")
 
 
+#: Sidecar recording the stats a fragment had at its last successful decode.
+_STAMP_SUFFIX = ".verified"
+
+
+def _stamp_path(fragment: Path) -> Path:
+    """Return the verified-stamp path of one fragment."""
+    return fragment.with_name(fragment.name + _STAMP_SUFFIX)
+
+
+def _stamp_matches(fragment: Path) -> bool:
+    """Return whether the stamp still describes the fragment on disk."""
+    stamp = _stamp_path(fragment)
+    if not stamp.is_file():
+        return False
+    stat = fragment.stat()
+    try:
+        content = stamp.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return content == f"{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _write_stamp(fragment: Path) -> None:
+    """Record the fragment's verified stats atomically."""
+    stamp = _stamp_path(fragment)
+    stat = fragment.stat()
+    temporary = stamp.with_name(f".{stamp.name}.part")
+    try:
+        temporary.write_text(f"{stat.st_size}:{stat.st_mtime_ns}", encoding="utf-8")
+        temporary.replace(stamp)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 class SametDownloader:
     """Download, cache, and verify SAMeT NetCDF files."""
 
@@ -188,6 +222,7 @@ class SametDownloader:
             self._download(chunk, file_size, part, listener=listener)
             self._verify(part, chunk.variables)
             part.replace(chunk_path)
+            _write_stamp(chunk_path)
         except NoDataAvailableError:
             raise
         except DownloadError:
@@ -250,7 +285,12 @@ class SametDownloader:
             )
 
     def _cache_is_usable(self, chunk: Chunk) -> bool:
-        """Verify an existing cache file, re-checking recent cycles."""
+        """Verify an existing cache file, re-checking recent cycles.
+
+        An immutable cycle whose verified stamp still matches its stats is
+        trusted without decoding it again; every other hit decodes the
+        file before use.
+        """
         if not chunk.path.is_file():
             return False
         if chunk.mutable:
@@ -259,11 +299,15 @@ class SametDownloader:
                     return False
             except (NoDataAvailableError, DownloadError):
                 return True
+        elif _stamp_matches(chunk.path):
+            return True
         try:
             self._verify(chunk.path, chunk.variables)
         except (DownloadError, OSError, ValueError, RuntimeError):
             chunk.path.unlink(missing_ok=True)
+            _stamp_path(chunk.path).unlink(missing_ok=True)
             return False
+        _write_stamp(chunk.path)
         return True
 
     @staticmethod
